@@ -3,12 +3,12 @@ const path = require("path");
 const expect = require("chai").expect;
 const os = require("os");
 
-console.log(os.platform(), os.type());
-
 let libName = "libbullmq.so";
 if (os.platform() === "darwin") {
   libName = "libbullmq.dylib";
 }
+
+console.log(process.cwd());
 
 let redis;
 
