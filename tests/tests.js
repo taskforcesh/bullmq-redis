@@ -1,6 +1,14 @@
 const IORedis = require("ioredis");
 const path = require("path");
 const expect = require("chai").expect;
+const os = require("os");
+
+console.log(os.platform(), os.type());
+
+let libName = "libbullmq.so";
+if (os.platform() === "darwin") {
+  libName = "libbullmq.dylib";
+}
 
 let redis;
 
@@ -12,11 +20,7 @@ before(async () => {
   if (modules[0] && modules[0].includes("bullmq")) {
     await redis.call("MODULE", "UNLOAD", "bullmq");
   }
-  await redis.call(
-    "MODULE",
-    "LOAD",
-    path.join(__dirname, "../libbullmq.0.0.0.dylib")
-  );
+  await redis.call("MODULE", "LOAD", path.join(__dirname, `../${libName}`));
 });
 
 after(async () => {
