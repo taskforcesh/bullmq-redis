@@ -15,7 +15,7 @@ jobs:
         image: redis
         ports:
           - 6379:6379
-        options: -v /home/runner/work/bullmq-redis/bullmq-redis:/var/tmp/bullmq-redis:r
+        options: -v /home/runner/work/bullmq-redis/bullmq-redis:/var/tmp/bullmq-redis:rw
 
     strategy:
       matrix:
