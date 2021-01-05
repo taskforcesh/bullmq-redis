@@ -3,15 +3,24 @@ const path = require("path");
 const expect = require("chai").expect;
 const os = require("os");
 
-let libName = "libbullmq.so";
-if (os.platform() === "darwin") {
-  libName = "libbullmq.dylib";
+let libName;
+switch (os.platform()) {
+  case "darwin":
+    libName = "libbullmq.dylib";
+    break;
+  case "linux":
+    libName = "libbullmq.so";
+    break;
 }
 
-console.log(process.cwd());
+let libPath;
+if (process.env.CI) {
+  libPath = `/var/tmp/bullmq-redis/${libName}`;
+} else {
+  libPath = path.join(__dirname, `../${libName}`);
+}
 
 let redis;
-
 const queueName = "bull:test-queue";
 
 before(async () => {
@@ -20,7 +29,7 @@ before(async () => {
   if (modules[0] && modules[0].includes("bullmq")) {
     await redis.call("MODULE", "UNLOAD", "bullmq");
   }
-  await redis.call("MODULE", "LOAD", path.join(__dirname, `../${libName}`));
+  await redis.call("MODULE", "LOAD", libPath);
 });
 
 after(async () => {
