@@ -95,7 +95,7 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
     if(numJobs == 1) {
         // 1) Check if there is a delayed job that should be processed now (nove to active and return)
         if(nextDelayedJob != null and nextDelayedTimestamp <= timestamp){
-            // RedisModule_Log.?(ctx, "warning", "getting delayed job");
+            // RedisModule_Log.?(ctx, "warning", "getting delayed directly job");
 
             if(common.moveZSetToList(ctx, delayedKey, activeKey, nextDelayedJob) != REDISMODULE_OK){
                 return REDISMODULE_ERR;
@@ -107,6 +107,7 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
             RedisModule_FreeCallReply.?(replyEvent);
 
             const getJobReply = common.getJob(ctx, nextDelayedJob, timestamp, nameStr, lockToken, lockTTL);
+            defer RedisModule_FreeCallReply.?(getJobReply);
             if(getJobReply != null){
                 _ = RedisModule_ReplyWithCallReply.?(ctx, getJobReply);
                 return RedisModule_ReplicateVerbatim.?(ctx);
@@ -129,6 +130,8 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
                 return REDISMODULE_ERR;
             }
             const getJobReply = common.getJob(ctx, jobId, timestamp, nameStr, lockToken, lockTTL);
+            defer RedisModule_FreeCallReply.?(getJobReply);
+
             _ = RedisModule_ReplyWithCallReply.?(ctx, getJobReply);
             return RedisModule_ReplicateVerbatim.?(ctx);
         }
@@ -146,9 +149,6 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
         pData.waitKey = RedisModule_HoldString.?(ctx, waitKey);
         pData.delayedKey = RedisModule_HoldString.?(ctx, delayedKey);
         pData.activeKey = RedisModule_HoldString.?(ctx, activeKey);
-
-        // NOTE: It is not documented if 0 represents an invalid timer so better to
-        // use a separate flag to mark if there is a timer or not.
         pData.delayTimer = 0;
         pData.lockTTL = lockTTL;
         pData.reply = null;
@@ -163,13 +163,13 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
         const blockingKeys = &[_]?*RedisModuleString{ waitKey, delayedKey };
         
         pData.blockedClient = RedisModule_BlockClientOnKeys.?(ctx, 
-            BlockedReplyCallback, 
-            TimeoutReplyCallback, 
-            BlockedFreePrivdata,
-            timeout, 
-            blockingKeys, 
-            2, 
-            pData);
+             BlockedReplyCallback, 
+             TimeoutReplyCallback, 
+             BlockedFreePrivdata,
+             timeout, 
+             blockingKeys, 
+             2, 
+             pData);
 
         return RedisModule_ReplicateVerbatim.?(ctx);
     }
@@ -197,13 +197,14 @@ fn BlockedReplyCallback(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString, ar
         const jobId = common.popList(ctx, waitKey);
         if(jobId != null) {
             const getJobReply = common.getJob(ctx, jobId, timestamp, nameStr, lockToken, pData.lockTTL);
+            defer RedisModule_FreeCallReply.?(getJobReply);
 
             if(getJobReply != null){
                 const replyEvent = RedisModule_Call.?(ctx, "XADD", "sccccscc", pData.eventsKey, "*",
                     "event", "active", 
                     "jobId", jobId, 
                     "prev", "waiting");
-
+                defer RedisModule_FreeCallReply.?(replyEvent);
                 return RedisModule_ReplyWithCallReply.?(ctx, getJobReply);
             }
         }
@@ -236,6 +237,8 @@ fn TimeoutReplyCallback(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString, ar
         const eventsKey = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "events");
         defer RedisModule_FreeString.?(ctx, eventsKey);
         const reply = replyWithJob(ctx, argv[1], eventsKey, argv[2], 10000, jobId, timestamp);
+        defer RedisModule_FreeCallReply.?(reply);
+
         return RedisModule_ReplyWithCallReply.?(ctx, reply);
     }
     return RedisModule_ReplyWithNullArray.?(ctx);
@@ -246,9 +249,7 @@ fn BlockedFreePrivdata(ctx: ?*RedisModuleCtx, privdata: ?*c_void) callconv(.C) v
 
     const pData: *ReplyData = @ptrCast(*ReplyData, RedisModule_GetBlockedClientPrivateData.?(ctx));
 
-    if(pData.delayTimer != 0){
-        const result = RedisModule_StopTimer.?(ctx, pData.delayTimer, null);
-    }
+    _ = RedisModule_StopTimer.?(ctx, pData.delayTimer, null);
     
     RedisModule_FreeString.?(ctx, pData.name);
     RedisModule_FreeString.?(ctx, pData.token);
@@ -266,10 +267,7 @@ fn DelayedTimerCallback(ctx: ?*RedisModuleCtx, data: ?*c_void) callconv(.C) void
     const timestamp = RedisModule_Milliseconds.?();
     const pData: *ReplyData = @ptrCast(*ReplyData, data);
 
-    if(pData.delayTimer != 0){
-        const result = RedisModule_StopTimer.?(ctx, pData.delayTimer, null);
-        pData.delayTimer = 0;
-    }
+    _ = RedisModule_StopTimer.?(ctx, pData.delayTimer, null);
 
     var nextTimestamp: c_longlong = undefined;
     
@@ -280,14 +278,13 @@ fn DelayedTimerCallback(ctx: ?*RedisModuleCtx, data: ?*c_void) callconv(.C) void
         if(nextTimestamp <= timestamp){
             var strLen: usize = undefined;
             const nameStr = RedisModule_StringPtrLen.?(pData.name, &strLen);
-
             // RedisModule_Log.?(ctx, "warning", "move delayed job to wait %s", nameStr);
 
             if (common.moveZSetToList(ctx, pData.delayedKey, pData.waitKey, nextDelayedJob) != REDISMODULE_OK){
                 RedisModule_Log.?(ctx, "error", "could not move to active %s set!", RedisModule_StringPtrLen.?(pData.name, &strLen));
                 return;
             }
-
+            
             // RedisModule_SignalKeyAsReady.?(ctx, pData.waitKey);
             // We unblock explicitly since SignalKeyAsReady does not work on a timer callback.
             // Fixed in newer versions of redis: https://github.com/redis/redis/issues/7880
@@ -342,6 +339,7 @@ fn replyWithJob(
             "event", "active", 
             "jobId", jobId, 
             "prev", "waiting");
+        RedisModule_FreeCallReply.?(replyEvent);
     }
     return getJobReply;
 }
