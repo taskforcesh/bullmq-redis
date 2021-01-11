@@ -1,17 +1,18 @@
 # Disclaimer
 
-This module is currently underx development and thus not suitable for production yet.
+This module is currently under development and thus not suitable for production yet.
 You are encouraged to test and evaluate it and report issues if you find any.
 
 # Features
 
 - Robust Queue system based on battle hardened architecture.
 - Optimized for maxing out Redis performance.
+- Non-polling design using blocking connections.
 - Simple but powerful api with many advanced features.
 - FIFO / LIFO Queues
 - Delayed jobs.
 - Batches.
-- Permisive MIT License
+- Permisive BSD License
 
 # BullMQ Redis Module
 
@@ -36,7 +37,24 @@ consider subscribing to help maintaining this library.
 
 # Installation
 
-Just load the module
+[Download](https://github.com/taskforcesh/bullmq-redis/releases) a release and install
+it in your redis instance using the load module command:
+
+```bash
+> MODULE LOAD /path/to/libbullmq.so
+```
+
+It is also possible to load the module automatically when starting redis by specifying
+the following directive in the redis.conf file:
+
+```bash
+loadmodule /path/to/libbullmq.so
+```
+
+# Versions
+
+This module follows [SemVer](https://semver.org/) and releases are automatically
+released as long as there is at least one fix.
 
 # Definitions
 
@@ -48,75 +66,102 @@ or messages.
 
 # Queue Commands
 
-## QADD queueName { jobName data opts [ID jobID] [DELAY millis] [LIFO] }+
+### Add jobs to the queue
 
-Adds jobs to the queue.
+`QADD queueName { jobName data opts [ID jobID] [DELAY millis] [LIFO] }+`
 
 This command lets you add one or more jobs to the queue in one call.
 
 Arguments:
 
-- queueName: the name of the queue name. For interoperability with existing libraries you should
-  use a name with a prefix, like: "bull:my-queue-name"
-- jobName: a name for the job. Useful for clasifying the jobs in UIs, can also be useful
-  when processing jobs if you want to perform different tasks depending on the job name.
-- data: a string containinig the data. For interoperability with existing tools you should store
-  data as a JSON string, but you can use any data you like including binary data.
-- opts: options useful for building high level functionality om top of existing BullMQ commands,
-  for example it can be used to stored the maximum amount of times a job should be retried in the case
-  of failure.
-- ID jobID: instead of letting BullMQ generate a jobId you can specify your own. Important to notice
-  is that BullMQ will ignore jobs with the same ID (that are still in the queue). This property can be
-  exploited to avoid duplication of jobs in some scenarios.
-- DELAY millis: milliseconds to delay this job. Instead of putting the job in the wait list, it is
-  placed in the delayed set. As soon as the job has waited the specified time it is returned in the next
-  call to QNEXT. Note, delayed jobs will skip the wait queue even if there are other non-delayed jobs
-  waiting.
-- LIFO: use this arg if you want the queue to return the jobs in Last In First Out order instead of
-  the default (First In First out) order.
+    - queueName: the name of the queue name. For interoperability with existing libraries you should
+    use a name with a prefix, like: "bull:my-queue-name"
+    - jobName: a name for the job. Useful for clasifying the jobs in UIs, can also be useful
+    when processing jobs if you want to perform different tasks depending on the job name.
+    - data: a string containinig the data. For interoperability with existing tools you should store
+    data as a JSON string, but you can use any data you like including binary data.
+    - opts: options useful for building high level functionality om top of existing BullMQ commands,
+    for example it can be used to store the maximum amount of times a job should be retried in the case
+    of failure.
+    - [ID jobID]: instead of letting BullMQ generate a jobId you can specify your own. Important to notice
+    is that BullMQ will ignore jobs with the same ID (that are still in the queue). This property can be
+    exploited to avoid duplication of jobs in some scenarios.
+    - [DELAY millis]: milliseconds to delay this job. Instead of putting the job in the wait list, it is
+    placed in the delayed set. As soon as the job has waited the specified time it is returned in the next
+    call to QNEXT. Note, delayed jobs will skip the wait queue even if there are other non-delayed jobs
+    waiting.
+    - [LIFO]: use this arg if you want the queue to return the jobs in Last In First Out order instead of
+    the default (First In First out) order.
 
-## QNEXT queue token lockTTL [BATCH numJobs] [timeout]
+### Get next job or jobs from the queue
 
-Gets one or more jobs from the queue, optionally blocking if no jobs are available at the moment
-of the call.
-Batch has 2 modes of operation
+`QNEXT queueName token lockTTL [BATCH numJobs] [timeout]`
 
-- standard batch, returns as much jobs as possible (less or equal than numJobs) without waiting.
-- batch with timeout, blocks until numJobs are available or timeout returning as many jobs as possible if
-  it timeout.
+This command optional blocks if no jobs are available at the moment and a timeout is passed as
+argument.
+
+Arguments:
+
+    - queueName: the name of the queue.
+    - token: a unique token used for locking the job.
+    - lockTTL: time to live for the lock. The job will be automatically moved back to wait status after
+    this time has passed. (Unless the job has completed or failed).
+
+    - [BATCH numJobs] number of jobs to get at once in a batch.
+
+        Batch has 2 modes of operation
+
+        - standard batch, returns as much jobs as possible (less or equal than numJobs) without waiting.
+        - batch with timeout, blocks until numJobs are available or timeout returning as many jobs as possible if
+        it timesout.
 
 Regarding batches there are some important considerations. All the jobs returned will be locked with
 lockTTL. You need to make sure you are done with these jobs before the lockTTL has expired or
 renew the lock time calling QRELOCK. If you fail to do so, other callers to QNEXT will receive
 the jobs that have expired.
 
-## QDONE queue token { jobId [RESULT result] | [ERROR err] }+ [TRIM numJobs] [NEXT loockTTL numJobs timeout]
+### Marks a job (or jobs) as completed (or failed)
 
-Marks a job (or jobs) as completed (or failed).
+`QDONE queue token { jobId [RESULT result] | [ERROR err] }+ [TRIM numJobs] [NEXT loockTTL numJobs timeout]`
 
-## QRELOCK queue token lockTTL { jobId }+
+### Renews the lock on a given job
 
-Renews the lock on a given job, so that we mark that the worker is still
-working on the job.
+`QRELOCK queue token lockTTL { jobId }+`
 
-## QINFO [LIMIT] [JOBS]
+This is used in order mark that the worker is still working on the job so that other workers calling QNEXT do not get the same job again.
+
+### Get queue info
+
+`QINFO [LIMIT] [JOBS]`
 
 Get info about different aspects of the queue.
 
-## QPAUSE queue
+### Pause queue
 
-Pauses a queue, it is possible to add jobs but QNEXT will not return any job until it
+`QPAUSE queue`
+
+Pauses a queue, it is possible to add and complete jobs but QNEXT will not return any job until it
 is resumed again.
 
-## QRESUME queue
+### Resume queue
+
+`QRESUME queue`
 
 Resumes a paused queue.
+
+### Check if Queue is Paused
+
+`QISPAUSED queue`
+
+Checks of queue is currently paused or running, returns "PAUSED" or "RUNNING".
 
 ## QGET queue [WAIT] [ACTIVE] [DELAYED] [COMPLETED] [FAILED]
 
 Get jobs (returns also last event ID)
 
-## QDEL queue jobId
+## Remove job from queue
+
+```QDEL queue jobId```
 
 Removes one job from the queue.
 
@@ -125,11 +170,15 @@ Removes one job from the queue.
 Update a job. It is possible to update progress, data, opts or even adding
 a new log message.
 
-## QDISPOSE queue
+### Dispose queue
+
+```QDISPOSE queue```
 
 Removes all data related to a Queue.
 
-## QCLEAN [WAIT] [ACTIVE] [DELAYED] [COMPLETED] [FAILED]
+### Remove jobs from state
+
+```QCLEAN [WAIT] [ACTIVE] [DELAYED] [COMPLETED] [FAILED]```
 
 Removes jobs from the given states.
 
@@ -141,7 +190,7 @@ it allows clients to consume events at their own pace avoiding missing any event
 # Performance
 
 BullMQ is really fast. On any modern hardware you should expect easily 50k jobs/sec.
-The bottlenecks will always be on the network IO and job processing itself rather than
+The bottlenecks will likely be on the network IO and job processing itself rather than
 on BullMQ. If you use batching you can increase this numbers easily an order or magnitude.
 
 # Examples of use
