@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/taskforcesh/bullmq-redis/compare/v1.0.0...v1.1.0) (2021-01-11)
+
+
+### Features
+
+* add pause/resume commands ([e31fe0c](https://github.com/taskforcesh/bullmq-redis/commit/e31fe0cd764f9dde7f58dc40bf17c6eb375ee27a))
+
 # 1.0.0 (2021-01-05)
 
 
