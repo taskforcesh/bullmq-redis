@@ -134,8 +134,6 @@ describe("Add jobs", () => {
   // TODO: Test with invalid arguments of all kind
 });
 
-// TODO: Test, try to QDONE a locked job with incorrect token
-
 describe("Get jobs", () => {
   beforeEach(() => {
     return redis.flushall();
@@ -181,7 +179,11 @@ describe("Get jobs", () => {
       multi.call("QDONE", queueName, jobId, "a-token", "RESULT", `quxbaz${i}`);
     }
     const result = await multi.exec();
-    console.log(result);
+    expect(result).to.have.property("length", batchSize);
+    for (let i = 0; i < batchSize; i++) {
+      expect(result[i][0]).to.be.equal(null);
+      expect(result[i][1]).to.be.equal("OK");
+    }
   });
 });
 
@@ -230,16 +232,14 @@ describe("Process jobs", () => {
     expect(job).to.have.property("result", "quxbaz");
   });
 
-  it("should complete a delayed job", async () => {
+  it("should not allow completing a locked job with invalid token", async () => {
     const jobName = "my-job-name";
     const jobId = await redis.call(
       "QADD",
       queueName,
       jobName,
       "foobar",
-      "some-opts",
-      "DELAY",
-      1000
+      "some-opts"
     );
     expect(jobId).to.be.equal("1");
 
@@ -253,27 +253,18 @@ describe("Process jobs", () => {
 
     await isLocked(queueName, jobId);
 
-    const result = await redis.call(
-      "QDONE",
-      queueName,
-      jobId,
-      "a-token",
-      "RESULT",
-      "quxbaz"
-    );
-
-    expect(result).to.be.equal("OK");
-
-    const jobKey = `${queueName}:${jobId}`;
-    job = await redis.hgetall(jobKey);
-
-    checkJob(job, jobName, "foobar", "some-opts");
-    expect(job).to.have.property("finishedOn");
-    expect(job).to.have.property("result", "quxbaz");
-    expect(parseInt(job.finishedOn)).to.be.above(parseInt(job.timestamp) + 999);
-    expect(parseInt(job.finishedOn)).to.be.below(
-      parseInt(job.timestamp) + 1100
-    );
+    try {
+      await redis.call(
+        "QDONE",
+        queueName,
+        jobId,
+        "wrong-token",
+        "RESULT",
+        "quxbaz"
+      );
+    } catch (err) {
+      expect(err.message).to.be.equal("ERR Could not release lock");
+    }
   });
 
   it("should block until a job is available", async () => {
@@ -324,8 +315,148 @@ describe("Process jobs", () => {
     expect(job).to.have.property("result", "quxbaz");
   });
 
-  it("should return a delayed job directly if delay time has passed", () => {
-    // Figure out how to detect that it has not blocked :/
+  describe("Remove on Completed", () => {});
+
+  describe("Remove on Failed", () => {});
+
+  describe("Delayed Jobs", () => {
+    it("should complete a delayed job", async () => {
+      const jobName = "my-job-name";
+      const jobId = await redis.call(
+        "QADD",
+        queueName,
+        jobName,
+        "foobar",
+        "some-opts",
+        "DELAY",
+        1000
+      );
+      expect(jobId).to.be.equal("1");
+
+      let job = redisToObj(
+        await redis.call("QNEXT", "bull:test-queue", "a-token", 30000, 10000)
+      );
+
+      checkJob(job, jobName, "foobar", "some-opts");
+
+      expect(job).to.have.property("processedOn");
+
+      await isLocked(queueName, jobId);
+
+      const result = await redis.call(
+        "QDONE",
+        queueName,
+        jobId,
+        "a-token",
+        "RESULT",
+        "quxbaz"
+      );
+
+      expect(result).to.be.equal("OK");
+
+      const jobKey = `${queueName}:${jobId}`;
+      job = await redis.hgetall(jobKey);
+
+      checkJob(job, jobName, "foobar", "some-opts");
+      expect(job).to.have.property("finishedOn");
+      expect(job).to.have.property("result", "quxbaz");
+      expect(parseInt(job.finishedOn)).to.be.above(
+        parseInt(job.timestamp) + 999
+      );
+      expect(parseInt(job.finishedOn)).to.be.below(
+        parseInt(job.timestamp) + 1100
+      );
+    });
+
+    it("should return a delayed job directly if delay time has passed", async () => {
+      const jobName = "my-job-name";
+      const jobId = await redis.call(
+        "QADD",
+        queueName,
+        jobName,
+        "foobar",
+        "some-opts",
+        "DELAY",
+        1000
+      );
+      expect(jobId).to.be.equal("1");
+
+      await delay(1500);
+
+      let job = redisToObj(
+        await redis.call("QNEXT", "bull:test-queue", "a-token", 30000, 10000)
+      );
+
+      checkJob(job, jobName, "foobar", "some-opts");
+      expect(job).to.have.property("processedOn");
+    });
+  });
+
+  describe("Pause / Resume", () => {
+    it("should pause a queue", async () => {
+      const jobName = "test-job";
+      await redis.call("QPAUSE", queueName);
+
+      let paused = await isPaused(queueName);
+      expect(paused).to.be.true;
+
+      await addJob(queueName, jobName, "foobar", "some-opts");
+
+      let job = await getNextJob(queueName, "a-token", 30000);
+
+      expect(job).to.be.undefined;
+
+      await redis.call("QRESUME", queueName);
+
+      paused = await isPaused(queueName);
+      expect(paused).to.be.false;
+
+      job = await getNextJob(queueName, "a-token", 30000);
+
+      checkJob(job, jobName, "foobar", "some-opts");
+    });
+
+    it("should block QNEXT until unpaused", async function () { 
+      this.timeout(5000);
+
+      const redis2 = new IORedis();
+
+      const jobName = "test-job";
+      await redis.call("QPAUSE", queueName);
+
+      let paused = await isPaused(queueName);
+      expect(paused).to.be.true;
+
+      await addJob(queueName, jobName, "foobar", "some-opts");
+
+      const jobPromise = getNextJob(queueName, "a-token", 30000, 2000);
+
+      await redis2.call("QRESUME", queueName);
+
+      redis2.quit();
+
+      const job = await jobPromise;
+
+      console.log({ job });
+
+      checkJob(job, jobName, "foobar", "some-opts");
+    });
+
+    it("should block QNEXT for delayed jobs", async function () {
+      this.timeout(5000);
+
+      const jobName = "test-job";
+      await redis.call("QPAUSE", queueName);
+
+      let paused = await isPaused(queueName);
+      expect(paused).to.be.true;
+
+      await addJob(queueName, jobName, "foobar", "some-opts", 1000);
+
+      const job = await getNextJob(queueName, "a-token", 30000, 2000);
+
+      expect(job).to.be.undefined;
+    });
   });
 });
 
@@ -352,4 +483,36 @@ function checkJob(job, name, data, opts) {
   expect(job).to.have.property("name", name);
   expect(job).to.have.property("data", data);
   expect(job).to.have.property("opts", opts);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function addJob(queueName, jobName, data, opts, delay) {
+  const args = ["QADD", queueName, jobName, data, opts];
+  if (delay) {
+    args.push("DELAY", delay);
+  }
+  return redis.call(...args);
+}
+
+async function getNextJob(queueName, token, lockTTL, timeout) {
+  const args = ["QNEXT", queueName, token, lockTTL];
+  if (timeout) {
+    args.push(timeout);
+  }
+  const job = await redis.call(...args);
+  if (job) {
+    return redisToObj(job);
+  }
+}
+
+async function isPaused(queueName) {
+  const args = ["QISPAUSED", queueName];
+  const result = await redis.call(...args);
+
+  return result === "PAUSED";
 }

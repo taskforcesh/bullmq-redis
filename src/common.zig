@@ -1,6 +1,12 @@
 usingnamespace @import("./redismodule.zig");
 const std = @import("std");
 
+
+// A special pointer that we can use between the core and the module to signal
+// field deletion, and that is impossible to be a valid pointer.
+// #define REDISMODULE_HASH_DELETE ((RedisModuleString*)(long)1)
+const RM_HASH_DELETE = @intToPtr(*RedisModuleString, 1);
+
 pub fn pushList(ctx: ?*RedisModuleCtx, list: ?*RedisModuleString, jobId: ?*RedisModuleString, where: c_int) c_int {
     const key = @ptrCast(?*RedisModuleKey, RedisModule_OpenKey.?(ctx, list, REDISMODULE_WRITE));
     defer RedisModule_CloseKey.?(key);
@@ -323,4 +329,67 @@ pub fn isQueuePaused(ctx: ?*RedisModuleCtx, metaKey: ?*RedisModuleString) bool {
     }
     RedisModule_CloseKey.?(key);
     return isPaused == 1;
+}
+
+pub fn pauseQueue(ctx: ?*RedisModuleCtx, queueName: ?*RedisModuleString, pause: bool) ?*RedisModuleString {
+    var strLen: usize = undefined;
+    const nameStr = RedisModule_StringPtrLen.?(queueName, &strLen);
+
+    var source: ?*RedisModuleString = undefined;
+    var target: ?*RedisModuleString = undefined;
+
+    if(pause){
+        source = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "wait");
+        target = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "pause");
+    } else {
+        source = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "pause");
+        target = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "wait");
+    }
+    
+    defer RedisModule_FreeString.?(ctx, source);
+    defer RedisModule_FreeString.?(ctx, target);
+
+    const key = @ptrCast(?*RedisModuleKey, RedisModule_OpenKey.?(ctx, source, REDISMODULE_READ));
+    if(key != null) {
+        RedisModule_CloseKey.?(key);
+      
+        const renameQueueReply = RedisModule_Call.?(ctx, "RENAME", "ss", source, target);
+        defer RedisModule_FreeCallReply.?(renameQueueReply);
+    } else {
+        // Check if the queue is in the oposite status
+        const oppositeKey = @ptrCast(?*RedisModuleKey, RedisModule_OpenKey.?(ctx, target, REDISMODULE_READ));
+        if(oppositeKey != null) {
+            RedisModule_CloseKey.?(oppositeKey);
+
+            if(pause) { 
+                return RedisModule_CreateStringPrintf.?(ctx, "%s", "ERR: Cannot pause a paused queue");
+            } else {
+                return RedisModule_CreateStringPrintf.?(ctx, "%s", "ERR: Cannnot resume a non-paused queue");
+            }
+        }
+    }
+
+    const meta = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "meta");
+    defer RedisModule_FreeString.?(ctx, meta);
+
+    const metaKey = @ptrCast(?*RedisModuleKey, RedisModule_OpenKey.?(ctx, meta, REDISMODULE_WRITE));
+    defer RedisModule_CloseKey.?(metaKey);
+
+    if(pause) {
+        const pausedStr = RedisModule_CreateStringFromLongLong.?(ctx, 1);
+        defer RedisModule_FreeString.?(ctx, pausedStr);
+
+        _ = RedisModule_HashSet.?(metaKey, REDISMODULE_HASH_CFIELDS, "paused", pausedStr, NULL);
+    } else {
+        _ = RedisModule_HashSet.?(metaKey, REDISMODULE_HASH_CFIELDS, "paused", RM_HASH_DELETE , NULL);
+    }
+
+
+    return null;
+}
+
+pub fn debugLog(msg: []const u8) void {
+    if (std.builtin.mode == .Debug) {
+        RedisModule_Log.?(ctx, "warning", msg);
+    }
 }

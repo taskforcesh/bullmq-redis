@@ -67,6 +67,7 @@ pub export fn QADD_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString,
     const idKey = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "id");
 
     const incrJobIdReply = RedisModule_Call.?(ctx, "INCR", "s", idKey);
+    defer RedisModule_FreeCallReply.?(incrJobIdReply);
 
     const jobCount: c_longlong = RedisModule_CallReplyInteger.?(incrJobIdReply);
 
@@ -103,7 +104,9 @@ pub export fn QADD_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString,
         const delayScore = (timestamp + delay) * 0x100 + (jobCount & 0xfff);
         const delayedKey = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "delayed");
         defer RedisModule_FreeString.?(ctx, delayedKey);
+        
         const replyDelay = RedisModule_Call.?(ctx, "ZADD", "sls", delayedKey, delayScore, jobId);
+        RedisModule_FreeCallReply.?(replyDelay);
 
         RedisModule_SignalKeyAsReady.?(ctx, delayedKey);
 
@@ -112,13 +115,14 @@ pub export fn QADD_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString,
             "event", "delayed", 
             "jobId", jobId, 
             "delay", delay);
+        RedisModule_FreeCallReply.?(replyEvent);
     } else {
         const metaKey = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "meta");
-        RedisModule_FreeString.?(ctx, metaKey);
+        defer RedisModule_FreeString.?(ctx, metaKey);
 
         var target: ?*RedisModuleString = null;
 
-        if(isQueuePaused(ctx, metaKey)){
+        if(common.isQueuePaused(ctx, metaKey)){
             target = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "pause");
         }else {
             target = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "wait");
@@ -134,6 +138,7 @@ pub export fn QADD_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString,
         const replyEvent = RedisModule_Call.?(ctx, "XADD", "sccccs", eventsKey, "*",
             "event", "waiting", 
             "jobId", jobId);
+        RedisModule_FreeCallReply.?(replyEvent);
     }
 
     // TODO: Trim events
@@ -168,14 +173,4 @@ fn storeJob(
          "opts", opts, 
          "timestamp", timestampStr,
          NULL);
-}
-
-fn isQueuePaused(ctx: ?*RedisModuleCtx, metaKey: ?*RedisModuleString) bool {
-    var isPaused: c_int = 0;
-    const key = @ptrCast(?*RedisModuleKey, RedisModule_OpenKey.?(ctx, metaKey, REDISMODULE_READ));
-    if(key != null) {
-        const res = RedisModule_HashGet.?(key, REDISMODULE_HASH_EXISTS | REDISMODULE_HASH_CFIELDS, "paused", &isPaused, NULL);
-    }
-    RedisModule_CloseKey.?(key);
-    return isPaused == 1;
 }

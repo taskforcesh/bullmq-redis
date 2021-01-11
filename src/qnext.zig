@@ -7,6 +7,8 @@ const ReplyData = packed struct {
     name: ?*RedisModuleString,
     eventsKey: ?*RedisModuleString,
     waitKey: ?*RedisModuleString,
+    pauseKey: ?*RedisModuleString,
+    metaKey: ?*RedisModuleString,
     delayedKey: ?*RedisModuleString,
     activeKey: ?*RedisModuleString,
     token: ?*RedisModuleString,
@@ -57,7 +59,7 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
     var lockTTL: c_longlong = undefined;
 
     if(RedisModule_StringToLongLong.?(argv[3], &lockTTL) == REDISMODULE_ERR){
-         return REDISMODULE_ERR;
+        return REDISMODULE_ERR;
     }
 
     var strLen: usize = undefined;
@@ -139,7 +141,11 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
 
     // 3) If no waiting jobs and timeout > 0 we may need to block:
     // TODO: Test if renaming paused to wait triggers the unblock
+    RedisModule_Log.?(ctx, "warning", "Before bloocking");
+
     if(timeout > 0){
+        RedisModule_Log.?(ctx, "warning", "Will block soon");
+
         var pData: *ReplyData = @ptrCast(*ReplyData, RedisModule_Alloc.?( @sizeOf(ReplyData) ));
 
         pData.timestamp = timestamp;
@@ -147,6 +153,8 @@ pub export fn QNEXT_Command(ctx: ?*RedisModuleCtx, argv: [*c]?*RedisModuleString
         pData.token = RedisModule_HoldString.?(ctx, lockToken);
         pData.eventsKey = RedisModule_HoldString.?(ctx, eventsKey);
         pData.waitKey = RedisModule_HoldString.?(ctx, waitKey);
+        pData.pauseKey = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "pause");
+        pData.metaKey = RedisModule_CreateStringPrintf.?(ctx, "%s:%s", nameStr, "meta");
         pData.delayedKey = RedisModule_HoldString.?(ctx, delayedKey);
         pData.activeKey = RedisModule_HoldString.?(ctx, activeKey);
         pData.delayTimer = 0;
@@ -255,6 +263,8 @@ fn BlockedFreePrivdata(ctx: ?*RedisModuleCtx, privdata: ?*c_void) callconv(.C) v
     RedisModule_FreeString.?(ctx, pData.token);
     RedisModule_FreeString.?(ctx, pData.eventsKey);
     RedisModule_FreeString.?(ctx, pData.waitKey);
+    RedisModule_FreeString.?(ctx, pData.pauseKey);
+    RedisModule_FreeString.?(ctx, pData.metaKey);
     RedisModule_FreeString.?(ctx, pData.delayedKey);
     RedisModule_FreeString.?(ctx, pData.activeKey);
 
@@ -262,12 +272,12 @@ fn BlockedFreePrivdata(ctx: ?*RedisModuleCtx, privdata: ?*c_void) callconv(.C) v
 }
 
 fn DelayedTimerCallback(ctx: ?*RedisModuleCtx, data: ?*c_void) callconv(.C) void {
-    // RedisModule_Log.?(ctx, "warning", "DelayedTimerCallback start");
+    RedisModule_Log.?(ctx, "warning", "DelayedTimerCallback start");
 
     const timestamp = RedisModule_Milliseconds.?();
     const pData: *ReplyData = @ptrCast(*ReplyData, data);
 
-    _ = RedisModule_StopTimer.?(ctx, pData.delayTimer, null);
+    // _ = RedisModule_StopTimer.?(ctx, pData.delayTimer, null);
 
     var nextTimestamp: c_longlong = undefined;
     
@@ -278,9 +288,18 @@ fn DelayedTimerCallback(ctx: ?*RedisModuleCtx, data: ?*c_void) callconv(.C) void
         if(nextTimestamp <= timestamp){
             var strLen: usize = undefined;
             const nameStr = RedisModule_StringPtrLen.?(pData.name, &strLen);
-            // RedisModule_Log.?(ctx, "warning", "move delayed job to wait %s", nameStr);
 
-            if (common.moveZSetToList(ctx, pData.delayedKey, pData.waitKey, nextDelayedJob) != REDISMODULE_OK){
+            var target: ?*RedisModuleString = null;
+            if(common.isQueuePaused(ctx, pData.metaKey)){
+                target = pData.pauseKey;
+            }else {
+                target = pData.waitKey;
+            }
+
+            RedisModule_Log.?(ctx, "warning", "move delayed job back to wait/pause %s", nameStr);
+
+            // We move the job to the wait list so that this or another blocked worker can pick it up.
+            if (common.moveZSetToList(ctx, pData.delayedKey, target, nextDelayedJob) != REDISMODULE_OK){
                 RedisModule_Log.?(ctx, "error", "could not move to active %s set!", RedisModule_StringPtrLen.?(pData.name, &strLen));
                 return;
             }

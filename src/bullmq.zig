@@ -4,6 +4,9 @@ const std = @import("std");
 const qadd = @import("qadd.zig");
 const qnext = @import("qnext.zig");
 const qdone = @import("qdone.zig");
+const qpause = @import("qpause.zig");
+const qresume = @import("qresume.zig");
+
 const common = @import("common.zig");
 
 export fn RedisModule_OnLoad(ctx: *RedisModuleCtx) c_int {
@@ -24,6 +27,24 @@ export fn RedisModule_OnLoad(ctx: *RedisModuleCtx) c_int {
     }
 
     result = RedisModule_CreateCommand.?(ctx, "QDONE", qdone.QDONE_Command, 
+        "write deny-oom pubsub random fast", 0, 0, 0);
+    if(result == REDISMODULE_ERR){
+        return REDISMODULE_ERR;
+    }
+
+    result = RedisModule_CreateCommand.?(ctx, "QPAUSE", qpause.QPAUSE_Command, 
+        "write deny-oom pubsub random fast", 0, 0, 0);
+    if(result == REDISMODULE_ERR){
+        return REDISMODULE_ERR;
+    }
+
+    result = RedisModule_CreateCommand.?(ctx, "QRESUME", qresume.QRESUME_Command, 
+        "write deny-oom pubsub random fast", 0, 0, 0);
+    if(result == REDISMODULE_ERR){
+        return REDISMODULE_ERR;
+    }
+
+    result = RedisModule_CreateCommand.?(ctx, "QISPAUSED", qpause.QISPAUSED_Command, 
         "write deny-oom pubsub random fast", 0, 0, 0);
     if(result == REDISMODULE_ERR){
         return REDISMODULE_ERR;
